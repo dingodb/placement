@@ -10,6 +10,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
+
 import sqlalchemy as sa
 
 from placement.db.sqlalchemy import models
@@ -96,5 +98,48 @@ def _get_inventory_by_provider_id(ctx, rp_id):
         inv.c.created_at,
     )
     sel = sel.where(inv.c.resource_provider_id == rp_id)
+
+    return [dict(r._mapping) for r in ctx.session.execute(sel)]
+
+
+def get_all_by_resource_provider_ids(context, rp_map):
+    """Get inventories for multiple resource providers in one query.
+
+    :param context: RequestContext
+    :param rp_map: dict mapping resource_provider.id -> ResourceProvider object
+    :returns: dict mapping resource_provider.id -> list of Inventory objects
+    """
+    if not rp_map:
+        return {}
+    db_inv = _get_inventory_by_provider_ids(context, list(rp_map.keys()))
+    result = collections.defaultdict(list)
+    for rec in db_inv:
+        rp_id = rec.pop('resource_provider_id')
+        rp = rp_map[rp_id]
+        inv = Inventory(
+            resource_provider=rp,
+            resource_class=context.rc_cache.string_from_id(
+                rec['resource_class_id']),
+            **rec)
+        result[rp_id].append(inv)
+    return dict(result)
+
+
+@db_api.placement_context_manager.reader
+def _get_inventory_by_provider_ids(ctx, rp_ids):
+    inv = sa.alias(_INV_TBL, name="i")
+    sel = sa.select(
+        inv.c.resource_provider_id,
+        inv.c.resource_class_id,
+        inv.c.total,
+        inv.c.reserved,
+        inv.c.min_unit,
+        inv.c.max_unit,
+        inv.c.step_size,
+        inv.c.allocation_ratio,
+        inv.c.updated_at,
+        inv.c.created_at,
+    )
+    sel = sel.where(inv.c.resource_provider_id.in_(rp_ids))
 
     return [dict(r._mapping) for r in ctx.session.execute(sel)]

@@ -10,6 +10,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
+
 import sqlalchemy as sa
 from sqlalchemy import distinct
 from sqlalchemy import func
@@ -184,5 +186,46 @@ def _get_by_consumer_type(context, project_id, user_id=None,
                    usage=item[1],
                    consumer_count=unique_consumer_counts[item[3]],
                    consumer_type=item[3])
+              for item in query.all()]
+    return result
+
+
+def get_all_by_resource_provider_uuids(context, rp_uuids):
+    """Get usages for multiple resource providers in one query.
+
+    :param context: RequestContext
+    :param rp_uuids: list of resource provider UUID strings
+    :returns: dict mapping rp_uuid -> list of Usage objects
+    """
+    if not rp_uuids:
+        return {}
+    usage_list = _get_all_by_resource_provider_uuids(context, rp_uuids)
+    result = collections.defaultdict(list)
+    for db_item in usage_list:
+        rp_uuid = db_item.pop('rp_uuid')
+        result[rp_uuid].append(Usage(**db_item))
+    return dict(result)
+
+
+@db_api.placement_context_manager.reader
+def _get_all_by_resource_provider_uuids(context, rp_uuids):
+    query = (context.session.query(
+             models.ResourceProvider.uuid,
+             models.Inventory.resource_class_id,
+             func.coalesce(func.sum(models.Allocation.used), 0))
+             .join(models.ResourceProvider,
+                   models.Inventory.resource_provider_id ==
+                   models.ResourceProvider.id)
+             .outerjoin(models.Allocation,
+                        sql.and_(models.Inventory.resource_provider_id ==
+                                 models.Allocation.resource_provider_id,
+                                 models.Inventory.resource_class_id ==
+                                 models.Allocation.resource_class_id))
+             .filter(models.ResourceProvider.uuid.in_(rp_uuids))
+             .group_by(models.ResourceProvider.uuid,
+                       models.Inventory.resource_class_id))
+    result = [dict(rp_uuid=item[0],
+                   resource_class=context.rc_cache.string_from_id(item[1]),
+                   usage=item[2])
               for item in query.all()]
     return result

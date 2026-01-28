@@ -22,8 +22,11 @@ import webob
 
 from placement import errors
 from placement import exception
+from placement.handlers.inventory import OUTPUT_INVENTORY_FIELDS
 from placement import microversion
+from placement.objects import inventory as inv_obj
 from placement.objects import resource_provider as rp_obj
+from placement.objects import usage as usage_obj
 from placement.policies import resource_provider as policies
 from placement.schemas import resource_provider as rp_schema
 from placement import util
@@ -67,6 +70,38 @@ def _serialize_providers(environ, resource_providers, want_version):
         if get_last_modified:
             last_modified = util.pick_last_modified(last_modified, provider)
         provider_data = _serialize_provider(environ, provider, want_version)
+        output.append(provider_data)
+    last_modified = last_modified or timeutils.utcnow(with_timezone=True)
+    return {"resource_providers": output}, last_modified
+
+
+def _serialize_provider_detail(environ, resource_provider, want_version,
+                               inventories, usages):
+    """Serialize a single resource provider with inventories and usages."""
+    data = _serialize_provider(environ, resource_provider, want_version)
+    data['inventories'] = {
+        inv.resource_class: {
+            field: getattr(inv, field) for field in OUTPUT_INVENTORY_FIELDS
+        }
+        for inv in inventories
+    }
+    data['usages'] = {u.resource_class: u.usage for u in usages}
+    return data
+
+
+def _serialize_providers_detail(environ, resource_providers, want_version,
+                                inventories_by_rp, usages_by_rp):
+    """Serialize a list of providers with inventories and usages."""
+    output = []
+    last_modified = None
+    get_last_modified = want_version.matches((1, 15))
+    for provider in resource_providers:
+        if get_last_modified:
+            last_modified = util.pick_last_modified(last_modified, provider)
+        inv_list = inventories_by_rp.get(provider.id, [])
+        usage_list = usages_by_rp.get(provider.uuid, [])
+        provider_data = _serialize_provider_detail(
+            environ, provider, want_version, inv_list, usage_list)
         output.append(provider_data)
     last_modified = last_modified or timeutils.utcnow(with_timezone=True)
     return {"resource_providers": output}, last_modified
@@ -260,9 +295,22 @@ def list_resource_providers(req):
             'Invalid trait(s) in "required" parameter: %(error)s' %
             {'error': exc})
 
+    want_detail = req.GET.get('detail', '').lower() == 'true'
+
     response = req.response
-    output, last_modified = _serialize_providers(
-        req.environ, resource_providers, want_version)
+    if want_detail:
+        rp_map = {rp.id: rp for rp in resource_providers}
+        rp_uuids = [rp.uuid for rp in resource_providers]
+        inventories_by_rp = inv_obj.get_all_by_resource_provider_ids(
+            context, rp_map)
+        usages_by_rp = usage_obj.get_all_by_resource_provider_uuids(
+            context, rp_uuids)
+        output, last_modified = _serialize_providers_detail(
+            req.environ, resource_providers, want_version,
+            inventories_by_rp, usages_by_rp)
+    else:
+        output, last_modified = _serialize_providers(
+            req.environ, resource_providers, want_version)
     response.body = encodeutils.to_utf8(jsonutils.dumps(output))
     response.content_type = 'application/json'
     if want_version.matches((1, 15)):

@@ -63,6 +63,10 @@ GET_RPS_SCHEMA_1_0 = {
         "uuid": {
             "type": "string",
             "format": "uuid"
+        },
+        "detail": {
+            "type": "string",
+            "enum": ["true", "false"]
         }
     },
     "additionalProperties": False,
